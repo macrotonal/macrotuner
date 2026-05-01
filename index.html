@@ -1,148 +1,27 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>Multi Tuner</title>
-<style>
-  body {
-    font-family: sans-serif;
-    background: #111;
-    color: white;
-    text-align: center;
-  }
-  .tuner {
-    margin: 20px auto;
-    width: 80%;
-  }
-  .label {
-    margin-bottom: 5px;
-  }
-  .bar {
-    height: 20px;
-    background: #333;
-    position: relative;
-  }
-  .needle {
-    width: 2px;
-    height: 100%;
-    position: absolute;
-    left: 50%;
-    background: white;
-  }
-  .fill {
-    height: 100%;
-    position: absolute;
-    top: 0;
-  }
-</style>
-</head>
-<body>
-
-<h1>Multi Tuner</h1>
-<button onclick="start()">Start Mic</button>
-
-<div id="tuners"></div>
-
-<script>
-const tunings = [
-  { name: "A=440", freq: 440, color: "red" },
-  { name: "A=446", freq: 446, color: "yellow" },
-  { name: "A=427", freq: 427, color: "green" },
-  { name: "A=434", freq: 434, color: "blue" }
-];
-
-const tunersDiv = document.getElementById("tuners");
-
-tunings.forEach((t, i) => {
-  const div = document.createElement("div");
-  div.className = "tuner";
-  div.innerHTML = `
-    <div class="label">${t.name}</div>
-    <div class="bar">
-      <div class="fill" id="fill${i}" style="background:${t.color}; width:50%;"></div>
-      <div class="needle"></div>
-    </div>
-  `;
-  tunersDiv.appendChild(div);
-});
-
-let audioContext, analyser, dataArray;
-
-async function start() {
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  audioContext = new AudioContext();
-  const source = audioContext.createMediaStreamSource(stream);
-  analyser = audioContext.createAnalyser();
-  analyser.fftSize = 2048;
-  source.connect(analyser);
-  dataArray = new Float32Array(analyser.fftSize);
-
-  update();
-}
-
-function autoCorrelate(buffer, sampleRate) {
-  let SIZE = buffer.length;
-  let rms = 0;
-
-  for (let i = 0; i < SIZE; i++) {
-    let val = buffer[i];
-    rms += val * val;
-  }
-  rms = Math.sqrt(rms / SIZE);
-  if (rms < 0.01) return -1;
-
-  let r1 = 0, r2 = SIZE - 1, threshold = 0.2;
-  for (let i = 0; i < SIZE / 2; i++) {
-    if (Math.abs(buffer[i]) < threshold) { r1 = i; break; }
-  }
-  for (let i = 1; i < SIZE / 2; i++) {
-    if (Math.abs(buffer[SIZE - i]) < threshold) { r2 = SIZE - i; break; }
-  }
-
-  buffer = buffer.slice(r1, r2);
-  SIZE = buffer.length;
-
-  let c = new Array(SIZE).fill(0);
-  for (let i = 0; i < SIZE; i++) {
-    for (let j = 0; j < SIZE - i; j++) {
-      c[i] = c[i] + buffer[j] * buffer[j + i];
-    }
-  }
-
-  let d = 0;
-  while (c[d] > c[d + 1]) d++;
-  let maxval = -1, maxpos = -1;
-  for (let i = d; i < SIZE; i++) {
-    if (c[i] > maxval) {
-      maxval = c[i];
-      maxpos = i;
-    }
-  }
-
-  let T0 = maxpos;
-  return sampleRate / T0;
-}
-
-function centsOff(freq, ref) {
-  return 1200 * Math.log2(freq / ref);
-}
+let smoothFreq = 0;
 
 function update() {
   analyser.getFloatTimeDomainData(dataArray);
-  const freq = autoCorrelate(dataArray, audioContext.sampleRate);
+  const rawFreq = autoCorrelate(dataArray, audioContext.sampleRate);
 
-  if (freq !== -1) {
+  if (rawFreq !== -1) {
+
+    // Smooth the frequency
+    smoothFreq = smoothFreq * 0.8 + rawFreq * 0.2;
+
     tunings.forEach((t, i) => {
-      let cents = centsOff(freq, t.freq);
+
+      const note = getNoteData(smoothFreq, t.freq);
+      let cents = 1200 * Math.log2(smoothFreq / note.exactFreq);
+
+      // Clamp to ±50 cents
       cents = Math.max(-50, Math.min(50, cents));
-      const percent = (cents + 50);
+
+      const percent = cents + 50;
+
       document.getElementById("fill" + i).style.width = percent + "%";
     });
   }
 
   requestAnimationFrame(update);
 }
-</script>
-
-</body>
-</html>
