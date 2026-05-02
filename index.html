@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>Macro Tuner</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
+  background: #111; color: #eee; padding: 1rem;
+}
+.app { max-width: 600px; margin: 0 auto; }
+.title { font-size: 11px; color: #555; margin-bottom: 1rem; letter-spacing: 0.1em; text-transform: uppercase; }
+.tuners { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+.tuner { border-radius: 14px; padding: 14px 12px 12px; }
+.tuner-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.tuner-label { font-size: 13px; font-weight: 600; }
+.tuner-hz { font-size: 11px; opacity: 0.6; }
+.note-display { font-size: 52px; font-weight: 500; text-align: center; line-height: 1; min-height: 52px; }
+.freq-display { font-size: 11px; opacity: 0.6; text-align: center; margin-top: 2px; min-height: 14px; }
+.meter-section { margin: 12px 0 4px; }
+.meter-labels { display: flex; justify-content: space-between; margin-bottom: 3px; }
+.meter-labels span { font-size: 9px; opacity: 0.5; }
+.meter-bar-wrap {
+  position: relative; height: 28px;
+  background: #1a1a1a; border-radius: 4px; overflow: hidden;
+}
+.meter-fill {
+  position: absolute; top: 0; bottom: 0;
+  transition: left 0.05s linear, width 0.05s linear, background 0.15s;
+  border-radius: 3px;
+}
+.meter-centre {
+  position: absolute; top: 0; bottom: 0; left: 50%;
+  width: 2px; background: #444; transform: translateX(-50%); z-index: 2;
+}
+.meter-ticks {
+  position: absolute; top: 0; bottom: 0; left: 0; right: 0;
+  pointer-events: none; z-index: 1;
+}
+.cents-display {
+  font-size: 13px; font-weight: 600; text-align: center;
+  min-height: 18px; margin-top: 4px;
+}
+.tuner-red    { background: #4a1008; color: #ffb3a7; border: 1px solid #8b2010; }
+.tuner-yellow { background: #3d2e00; color: #ffe88a; border: 1px solid #7a5a00; }
+.tuner-green  { background: #0a2e12; color: #9eedb4; border: 1px solid #1a6630; }
+.tuner-blue   { background: #071e40; color: #8ec8ff; border: 1px solid #1040a0; }
+.start-btn {
+  display: block; width: 100%; margin-top: 1rem; padding: 14px;
+  border-radius: 10px; border: 0.5px solid #333; background: #1a1a1a;
+  color: #eee; font-size: 15px; cursor: pointer;
+}
+.status { font-size: 12px; color: #555; text-align: center; margin-top: 8px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <p class="title">Macro tuner</p>
+  <div class="tuners" id="tuners"></div>
+  <button class="start-btn" id="startBtn">Allow microphone access to start</button>
+  <p class="status" id="status">Tap the button to begin</p>
+</div>
+<script>
+const SYSTEMS = [
+  { label: 'Standard',  hz: 440, color: '#ff6b55', cls: 'tuner-red'    },
+  { label: '25c sharp', hz: 446, color: '#ffd84a', cls: 'tuner-yellow' },
+  { label: '50c flat',  hz: 427, color: '#4ed87a', cls: 'tuner-green'  },
+  { label: '25c flat',  hz: 434, color: '#5ab4ff', cls: 'tuner-blue'   },
+]
+const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B']
+
+const tunerEl = document.getElementById('tuners')
+SYSTEMS.forEach((sys, i) => {
+  const div = document.createElement('div')
+  div.className = `tuner ${sys.cls}`
+  // Draw tick marks as background SVG
+  const ticks = [-80,-60,-40,-20,0,20,40,60,80].map(c => {
+    const pct = 50 + c / 2  // -100 to +100 cents maps to 0-100%
+    const h = c === 0 ? 100 : 60
+    const y = (100 - h) / 2
+    return `<line x1="${pct}%" y1="${y}%" x2="${pct}%" y2="${100-y}%" stroke="#333" stroke-width="${c===0?2:1}"/>`
+  }).join('')
+  div.innerHTML = `
+    <div class="tuner-header">
+      <span class="tuner-label">${sys.label}</span>
+      <span class="tuner-hz">A=${sys.hz}Hz</span>
+    </div>
+    <div class="note-display" id="note${i}">—</div>
+    <div class="freq-display" id="freq${i}"></div>
+    <div class="meter-section">
+      <div class="meter-labels">
+        <span>−100¢</span><span>flat</span><span>0</span><span>sharp</span><span>+100¢</span>
+      </div>
+      <div class="meter-bar-wrap" id="wrap${i}">
+        <svg class="meter-ticks" viewBox="0 0 100 100" preserveAspectRatio="none">${ticks}</svg>
+        <div class="meter-centre"></div>
+        <div class="meter-fill" id="fill${i}" style="display:none"></div>
+      </div>
+    </div>
+    <div class="cents-display" id="cents${i}"></div>
+  `
+  tunerEl.appendChild(div)
+})
+
+function updateMeter(i, cents, color, active) {
+  const fill = document.getElementById(`fill${i}`)
+  if (!active) { fill.style.display = 'none'; return }
+  fill.style.display = 'block'
+  const abs = Math.abs(cents)
+  const inTune = abs < 5
+  const col = inTune ? '#44ff88' : abs < 20 ? '#ffcc00' : '#ff4444'
+  // cents range -100 to +100, maps to 0-100% width position
+  // centre is at 50%
+  // fill goes from centre to needle position
+  const clamp = Math.max(-100, Math.min(100, cents))
+  const needlePct = 50 + clamp / 2  // 0% = -100c, 50% = 0c, 100% = +100c
+  const leftPct = Math.min(50, needlePct)
+  const widthPct = Math.abs(needlePct - 50)
+  fill.style.left = leftPct + '%'
+  fill.style.width = Math.max(widthPct, 1) + '%'
+  fill.style.background = col
+  fill.style.opacity = inTune ? '0.9' : '0.7'
+}
+
+let audioCtx, analyser, running = false
+let smoothFreq = 0, smoothActive = false, silenceCount = 0
+const display = SYSTEMS.map(() => ({ cents: 0 }))
+const SILENCE_HOLD = 50
+
+function freqToMidi(freq, a4) { return 69 + 12 * Math.log2(freq / a4) }
+
+function getNoteInfo(freq, a4) {
+  const midi = freqToMidi(freq, a4)
+  const rounded = Math.round(midi)
+  const cents = (midi - rounded) * 100
+  const octave = Math.floor(rounded / 12) - 1
+  const note = NOTE_NAMES[((rounded % 12) + 12) % 12]
+  return { note, octave, cents }
+}
+
+function detectPitch(analyser, sampleRate) {
+  const bufLen = analyser.frequencyBinCount
+  const freqData = new Float32Array(bufLen)
+  analyser.getFloatFrequencyData(freqData)
+  const maxDB = Math.max(...freqData.slice(0, bufLen / 2))
+  if (maxDB < -50) return -1
+  const mag = freqData.map(v => Math.pow(10, v / 20))
+  const hps = mag.slice()
+  for (let h = 2; h <= 4; h++)
+    for (let i = 0; i < hps.length; i++)
+      hps[i] *= (mag[Math.floor(i * h)] || 0)
+  const minBin = Math.floor(60 * bufLen * 2 / sampleRate)
+  const maxBin = Math.floor(1200 * bufLen * 2 / sampleRate)
+  let maxVal = 0, maxBinIdx = minBin
+  for (let i = minBin; i < maxBin; i++)
+    if (hps[i] > maxVal) { maxVal = hps[i]; maxBinIdx = i }
+  if (maxBinIdx > 0 && maxBinIdx < hps.length - 1) {
+    const y1 = hps[maxBinIdx-1], y2 = hps[maxBinIdx], y3 = hps[maxBinIdx+1]
+    const offset = (y3 - y1) / (2 * (2*y2 - y1 - y3))
+    return (maxBinIdx + offset) * sampleRate / (bufLen * 2)
+  }
+  return maxBinIdx * sampleRate / (bufLen * 2)
+}
+
+document.getElementById('startBtn').addEventListener('click', async () => {
+  if (running) return
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)()
+    analyser = audioCtx.createAnalyser()
+    analyser.fftSize = 16384
+    analyser.smoothingTimeConstant = 0.85
+    audioCtx.createMediaStreamSource(stream).connect(analyser)
+    running = true
+    document.getElementById('startBtn').style.display = 'none'
+    document.getElementById('status').textContent = 'Listening...'
+    detect()
+  } catch(e) {
+    document.getElementById('status').textContent = 'Microphone access denied'
+  }
+})
+
+function updateDisplays(freq) {
+  SYSTEMS.forEach((sys, i) => {
+    const info = getNoteInfo(freq, sys.hz)
+    display[i].cents += 0.12 * (info.cents - display[i].cents)
+    const sc = Math.round(display[i].cents)
+    const abs = Math.abs(sc)
+    const inTune = abs < 5
+    document.getElementById(`note${i}`).textContent = info.note + info.octave
+    document.getElementById(`freq${i}`).textContent = Math.round(freq) + ' Hz'
+    document.getElementById(`cents${i}`).textContent = inTune ? '✓ in tune' : (sc > 0 ? '+' : '') + sc + ' cents'
+    document.getElementById(`cents${i}`).style.color = inTune ? '#44ff88' : ''
+    updateMeter(i, display[i].cents, sys.color, true)
+  })
+}
+
+function clearDisplays() {
+  SYSTEMS.forEach((sys, i) => {
+    document.getElementById(`note${i}`).textContent = '—'
+    document.getElementById(`freq${i}`).textContent = ''
+    document.getElementById(`cents${i}`).textContent = ''
+    document.getElementById(`cents${i}`).style.color = ''
+    updateMeter(i, 0, sys.color, false)
+    display[i].cents = 0
+  })
+}
+
+function detect() {
+  if (!running) return
+  const rawFreq = detectPitch(analyser, audioCtx.sampleRate)
+  if (rawFreq > 0) {
+    silenceCount = 0
+    if (!smoothActive) { smoothFreq = rawFreq; smoothActive = true }
+    else {
+      const ratio = rawFreq / smoothFreq
+      if (ratio > 0.5 && ratio < 2.0) smoothFreq += 0.07 * (rawFreq - smoothFreq)
+    }
+    updateDisplays(smoothFreq)
+  } else {
+    silenceCount++
+    if (silenceCount > SILENCE_HOLD) { smoothActive = false; clearDisplays() }
+  }
+  requestAnimationFrame(detect)
+}
+</script>
+</body>
+</html>
